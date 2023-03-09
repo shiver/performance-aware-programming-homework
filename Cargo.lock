@@ -3,5 +3,21 @@
 version = 3
 
 [[package]]
+name = "anyhow"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "224afbd727c3d6e4b90103ece64b8d1b67fbb1973b1046c2281eed3f3803f800"
+
+[[package]]
+name = "byteorder"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
+
+[[package]]
 name = "performance-aware-programming"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byteorder",
+]
