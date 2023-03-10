@@ -2,7 +2,7 @@ use anyhow::Result;
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::{
     fs::File,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Seek},
 };
 
 fn load_binary(path: &str) -> Result<Vec<u8>> {
@@ -14,7 +14,7 @@ fn load_binary(path: &str) -> Result<Vec<u8>> {
     Ok(buffer)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 #[allow(dead_code)]
 enum ModField {
     MemoryNoDisplacement = 0b00,
@@ -46,6 +46,48 @@ enum Registers {
 }
 
 const SHOW_COMMENTS: bool = false;
+
+fn get_displacement(mode: ModField, rm: u8, value: i16) -> String {
+    match mode {
+        ModField::MemoryNoDisplacement => match rm {
+            0b000 => format!("[bx + si]"),
+            0b001 => format!("[bx + di]"),
+            0b010 => format!("[bp + si]"),
+            0b011 => format!("[bp + di]"),
+            0b100 => format!("[si]"),
+            0b101 => format!("[di]"),
+            0b110 if value == 0 => format!("[bp]"),
+            0b110 => format!("[{}]", value),
+            0b111 => format!("[bx]"),
+
+            _ => unreachable!(),
+        },
+
+        ModField::MemoryDisplacement16bit | ModField::MemoryDisplacement8bit => {
+            let value_str = if value >= 0 {
+                format!("+ {}", value)
+            } else {
+                format!("- {}", value.abs())
+            };
+
+            match rm {
+                0b000 => format!("[bx + si {}]", value_str),
+                0b001 => format!("[bx + di {}]", value_str),
+                0b010 => format!("[bp + si {}]", value_str),
+                0b011 => format!("[bp + di {}]", value_str),
+                0b100 => format!("[si {}]", value_str),
+                0b101 => format!("[di {}]", value_str),
+                0b110 if value == 0 => format!("[bp]"),
+                0b110 => format!("[{}]", value),
+                0b111 => format!("[bx {}]", value_str),
+
+                _ => unreachable!(),
+            }
+        }
+
+        _ => unreachable!(),
+    }
+}
 
 fn main() -> Result<()> {
     let binary_filename = std::env::args()
@@ -92,45 +134,21 @@ fn main() -> Result<()> {
 
             let (source, destination) = match mode {
                 ModField::MemoryNoDisplacement => {
-                    let memory = match rm {
-                        0b000 => format!("[bx + si]"),
-                        0b001 => format!("[bx + di]"),
-                        0b010 => format!("[bp + si]"),
-                        0b011 => format!("[bp + di]"),
-                        0b100 => format!("[si]"),
-                        0b101 => format!("[di]"),
-                        0b110 if value == 0 => format!("[bp]"),
-                        0b110 => format!("[{}]", value),
-                        0b111 => format!("[bx]"),
-
-                        _ => unreachable!(),
-                    };
+                    let displacement = get_displacement(mode, rm, value);
 
                     match d_field {
-                        0 => (memory, format!("{:?}", reg)),
-                        1 => (format!("{:?}", reg), memory),
+                        0 => (displacement, format!("{:?}", reg)),
+                        1 => (format!("{:?}", reg), displacement),
                         _ => unreachable!(),
                     }
                 }
 
                 ModField::MemoryDisplacement16bit | ModField::MemoryDisplacement8bit => {
-                    let memory = match rm {
-                        0b000 => format!("[bx + si + {}]", value),
-                        0b001 => format!("[bx + di + {}]", value),
-                        0b010 => format!("[bp + si + {}]", value),
-                        0b011 => format!("[bp + di + {}]", value),
-                        0b100 => format!("[si + {}]", value),
-                        0b101 => format!("[di + {}]", value),
-                        0b110 if value == 0 => format!("[bp]"),
-                        0b110 => format!("[{}]", value),
-                        0b111 => format!("[bx + {}]", value),
-
-                        _ => unreachable!(),
-                    };
+                    let displacement = get_displacement(mode, rm, value);
 
                     match d_field {
-                        0 => (memory, format!("{:?}", reg)),
-                        1 => (format!("{:?}", reg), memory),
+                        0 => (displacement, format!("{:?}", reg)),
+                        1 => (format!("{:?}", reg), displacement),
                         _ => unreachable!(),
                     }
                 }
@@ -157,16 +175,71 @@ fn main() -> Result<()> {
             }
         } else if opcode >> 1 == 0b1100011 {
             // MOV - Immediate to register/memory
-            println!("mov ;Immediate to register/memory");
+            print!("mov ");
 
-            // let w_field = opcode & 0b1;
-
+            let w_field = opcode & 0b1;
             let next_byte = cursor.read_u8()?;
-            let mode = unsafe { std::mem::transmute::<u8, ModField>(next_byte >> 6) };
+            let rm = next_byte & 0b111;
+            let mod_field = next_byte >> 6;
+            let mode = unsafe { std::mem::transmute::<u8, ModField>(mod_field) };
 
-            if mode == ModField::RegisterNoDisplacement {}
+            let displacement_value = match w_field {
+                0 => cursor.read_i8()? as i16,
+                1 => cursor.read_i16::<LittleEndian>()?,
+                _ => unreachable!(),
+            };
 
-            break 'main;
+            let (destination, source) = match mode {
+                ModField::RegisterNoDisplacement => {
+                    let reg = unsafe { std::mem::transmute::<u8, Registers>(rm) };
+                    let value_str = match w_field {
+                        0 => format!("byte {}", displacement_value),
+                        1 => format!("word {}", displacement_value),
+                        _ => unreachable!(),
+                    };
+
+                    (format!("{:?}", reg), value_str)
+                },
+
+                ModField::MemoryNoDisplacement => {
+                    let displacement = get_displacement(mode, rm, displacement_value);
+
+                    let value_str = match w_field {
+                        0 => format!("byte {}", displacement_value),
+                        1 => format!("word {}", displacement_value),
+                        _ => unreachable!(),
+                    };
+
+                    (format!("{}", displacement), value_str)
+                },
+
+                _ => {
+                    let displacement = get_displacement(mode, rm, displacement_value);
+
+                    let data: i16 = if w_field == 0 {
+                        cursor.read_i8()? as i16
+                    } else {
+                        cursor.read_i16::<LittleEndian>()?
+                    };
+
+                    let value_str = match w_field {
+                        0 => format!("byte {}", data),
+                        1 => format!("word {}", data),
+                        _ => unreachable!(),
+                    };
+
+                    (format!("{}", displacement), value_str)
+                }
+            };
+
+            print!("{}, {}", destination, source);
+
+            if SHOW_COMMENTS {
+                print!(
+                    "; Immediate to register/memory \n\topcode={:#b} w={} disp={} mod={:#b}, rm={:#b}\n",
+                    opcode, w_field, displacement_value, mod_field, rm
+                );
+            }
         } else if opcode >> 4 == 0b1011 {
             // MOV - Immediate to register
             let w_field = opcode >> 3 & 0b1;
