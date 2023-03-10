@@ -199,7 +199,7 @@ fn main() -> Result<()> {
                     };
 
                     (format!("{:?}", reg), value_str)
-                },
+                }
 
                 ModField::MemoryNoDisplacement => {
                     let displacement = get_displacement(mode, rm, displacement_value);
@@ -211,7 +211,7 @@ fn main() -> Result<()> {
                     };
 
                     (format!("{}", displacement), value_str)
-                },
+                }
 
                 _ => {
                     let displacement = get_displacement(mode, rm, displacement_value);
@@ -254,10 +254,36 @@ fn main() -> Result<()> {
             }
         } else if opcode >> 1 == 0b1010000 {
             // MOV - Memory to accumulator
-            println!("mov ;Memory to accumulator");
+            print!("mov ax, ");
+
+            let w_field = opcode & 1;
+            let value = if w_field == 0 {
+                cursor.read_i8()? as i16
+            } else {
+                cursor.read_i16::<LittleEndian>()?
+            };
+
+            print!("[{}]", value);
+
+            if SHOW_COMMENTS {
+                print!("; Memory to accumulator");
+            }
         } else if opcode >> 1 == 0b1010001 {
             // MOV - Accumulator to memory
-            println!("mov ;Accumulator to memory");
+            print!("mov ");
+
+            let w_field = opcode & 1;
+            let value = if w_field == 0 {
+                cursor.read_i8()? as i16
+            } else {
+                cursor.read_i16::<LittleEndian>()?
+            };
+
+            print!("[{}], ax", value);
+
+            if SHOW_COMMENTS {
+                print!("; Accumulator to memory");
+            }
         } else if opcode == 0b10001110 {
             // MOV - Register/memory to segment register
             println!("mov ;Register/memory to segment register");
