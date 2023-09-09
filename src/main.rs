@@ -1,9 +1,9 @@
 use anyhow::Result;
 use byteorder::{LittleEndian, ReadBytesExt};
+use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{Cursor, Read};
-use std::collections::HashMap;
 
 fn load_binary(path: &str) -> Result<Vec<u8>> {
     let mut file = File::open(path)?;
@@ -24,7 +24,7 @@ enum Mode {
 }
 
 enum OperandType {
-    Register(Register),
+    Register(RegisterType),
     Memory(String),
 }
 
@@ -40,7 +40,7 @@ impl fmt::Display for OperandType {
 #[repr(u8)]
 #[derive(Debug)]
 #[allow(non_camel_case_types, dead_code)]
-enum Register {
+enum RegisterType {
     al = 0b0000,
     cl = 0b0001,
     dl = 0b0010,
@@ -59,9 +59,57 @@ enum Register {
     di = 0b1111,
 }
 
-impl fmt::Display for Register {
+impl fmt::Display for RegisterType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         return write!(f, "{:?}", self);
+    }
+}
+
+#[derive(Default)]
+struct DataRegister(u16);
+
+impl DataRegister {
+    fn val(&self) -> u16 {
+        self.0
+    }
+
+    fn high(&self) -> u8 {
+        (self.0 >> 4) as u8
+    }
+
+    fn low(&self) -> u8 {
+        (self.0 & 0b1111) as u8
+    }
+}
+
+#[derive(Default)]
+struct Register(u16);
+
+#[derive(Default)]
+struct RegisterFile {
+    ax: DataRegister,
+    bx: DataRegister,
+    cx: DataRegister,
+    dx: DataRegister,
+
+    sp: Register,
+    bp: Register,
+    si: Register,
+    di: Register,
+
+    cs: Register,
+    ds: Register,
+    ss: Register,
+    es: Register,
+
+    ip: Register,
+}
+
+impl RegisterFile {
+    fn new() -> Self {
+        Self {
+            ..Default::default()
+        }
     }
 }
 
@@ -186,10 +234,10 @@ fn get_displacement_value(cursor: &mut Cursor<Vec<u8>>, mode: Mode, rm_field: u8
     return Ok(value);
 }
 
-fn get_register(reg_field: u8, width: u8) -> Register {
+fn get_register(reg_field: u8, width: u8) -> RegisterType {
     return match width {
-        0 => unsafe { std::mem::transmute::<u8, Register>(reg_field) },
-        1 => unsafe { std::mem::transmute::<u8, Register>(1 << 3 | reg_field) },
+        0 => unsafe { std::mem::transmute::<u8, RegisterType>(reg_field) },
+        1 => unsafe { std::mem::transmute::<u8, RegisterType>(1 << 3 | reg_field) },
         _ => unreachable!(),
     };
 }
@@ -261,6 +309,8 @@ fn main() -> Result<()> {
         .expect("Please provide an assembled filename");
     let binary = load_binary(&binary_filename)?;
 
+    let registers = RegisterFile::new();
+
     let mut cursor = Cursor::new(binary);
 
     println!("bits 16");
@@ -268,7 +318,10 @@ fn main() -> Result<()> {
     let mut labels: HashMap<usize, String> = HashMap::new();
 
     loop {
-        let mut instruction = Instruction { address: cursor.position() as usize, text: String::new() };
+        let mut instruction = Instruction {
+            address: cursor.position() as usize,
+            text: String::new(),
+        };
 
         let opcode = match cursor.read_u8() {
             Ok(byte) => byte,
@@ -298,7 +351,9 @@ fn main() -> Result<()> {
                 _ => unreachable!(),
             };
 
-            instruction.text.push_str(&format!("{}, {}", destination, source));
+            instruction
+                .text
+                .push_str(&format!("{}, {}", destination, source));
 
             if SHOW_COMMENTS {
                 instruction.text.push_str(&format!(
@@ -321,7 +376,9 @@ fn main() -> Result<()> {
             let immediate = get_value(&mut cursor, is_word)?;
             let size = get_value_size(immediate, is_word)?;
 
-            instruction.text.push_str(&format!("{}, {} {}", other, size, immediate));
+            instruction
+                .text
+                .push_str(&format!("{}, {} {}", other, size, immediate));
 
             if SHOW_COMMENTS {
                 instruction.text.push_str(&format!(
@@ -339,7 +396,9 @@ fn main() -> Result<()> {
             if w_field == 0 {
                 instruction.text.push_str(&format!("{}", cursor.read_i8()?));
             } else {
-                instruction.text.push_str(&format!("{}", cursor.read_i16::<LittleEndian>()?));
+                instruction
+                    .text
+                    .push_str(&format!("{}", cursor.read_i16::<LittleEndian>()?));
             }
         } else if opcode >> 1 == 0b1010000 {
             // MOV - Memory to accumulator
@@ -376,10 +435,14 @@ fn main() -> Result<()> {
             }
         } else if opcode == 0b10001110 {
             // MOV - Register/memory to segment register
-            instruction.text.push_str("mov ;Register/memory to segment register");
+            instruction
+                .text
+                .push_str("mov ;Register/memory to segment register");
         } else if opcode == 0b10001100 {
             // MOV - Segment register to register/memory
-            instruction.text.push_str("mov ;Segment register to register/memory");
+            instruction
+                .text
+                .push_str("mov ;Segment register to register/memory");
         } else if opcode >> 2 == 0b000000 {
             // ADD - Register/memory with register to either
             instruction.text.push_str("add ");
@@ -406,10 +469,14 @@ fn main() -> Result<()> {
                 _ => unreachable!(),
             };
 
-            instruction.text.push_str(&format!("{}, {}", destination, source));
+            instruction
+                .text
+                .push_str(&format!("{}, {}", destination, source));
 
             if SHOW_COMMENTS {
-                instruction.text.push_str("; Register/memory with register to either");
+                instruction
+                    .text
+                    .push_str("; Register/memory with register to either");
             }
         } else if opcode >> 2 == 0b100000 {
             // ADD, SUB, CMP - Immediate to register/memory
@@ -422,7 +489,9 @@ fn main() -> Result<()> {
             let mod_field = next_byte >> 6;
 
             let op_field = next_byte >> 3 & 0b111;
-            instruction.text.push_str(&format!("{} ", op_field_to_op(op_field)));
+            instruction
+                .text
+                .push_str(&format!("{} ", op_field_to_op(op_field)));
 
             let mode = get_mode(mod_field);
             let other = get_other(&mut cursor, mode, rm_field, w_field)?;
@@ -440,7 +509,9 @@ fn main() -> Result<()> {
             let immediate = get_value(&mut cursor, is_word)?;
             if let OperandType::Memory(_) = other {
                 let sign_extend = if s_field == 1 { true } else { false };
-                instruction.text.push_str(&format!("{} ", get_value_size(immediate, sign_extend)?));
+                instruction
+                    .text
+                    .push_str(&format!("{} ", get_value_size(immediate, sign_extend)?));
             } else {
                 instruction.text.push_str(&format!("{}", immediate));
             }
@@ -464,7 +535,9 @@ fn main() -> Result<()> {
                 format!("al")
             };
 
-            instruction.text.push_str(&format!("{}, {}", destination, immediate));
+            instruction
+                .text
+                .push_str(&format!("{}, {}", destination, immediate));
 
             if SHOW_COMMENTS {
                 instruction.text.push_str("; Immediate to accumulator");
@@ -495,10 +568,14 @@ fn main() -> Result<()> {
                 _ => unreachable!(),
             };
 
-            instruction.text.push_str(&format!("{}, {}", destination, source));
+            instruction
+                .text
+                .push_str(&format!("{}, {}", destination, source));
 
             if SHOW_COMMENTS {
-                instruction.text.push_str("; Register/memory and register to either");
+                instruction
+                    .text
+                    .push_str("; Register/memory and register to either");
             }
         } else if opcode >> 1 == 0b0010110 {
             // SUB - Immediate from accumulator
@@ -515,7 +592,9 @@ fn main() -> Result<()> {
                 format!("al")
             };
 
-            instruction.text.push_str(&format!("{}, {}", destination, immediate));
+            instruction
+                .text
+                .push_str(&format!("{}, {}", destination, immediate));
 
             if SHOW_COMMENTS {
                 instruction.text.push_str("; Immediate from accumulator");
@@ -546,7 +625,9 @@ fn main() -> Result<()> {
                 _ => unreachable!(),
             };
 
-            instruction.text.push_str(&format!("{}, {}", destination, source));
+            instruction
+                .text
+                .push_str(&format!("{}, {}", destination, source));
 
             if SHOW_COMMENTS {
                 instruction.text.push_str("; Register/memory and register");
@@ -566,7 +647,9 @@ fn main() -> Result<()> {
                 format!("al")
             };
 
-            instruction.text.push_str(&format!("{}, {}", destination, immediate));
+            instruction
+                .text
+                .push_str(&format!("{}, {}", destination, immediate));
 
             if SHOW_COMMENTS {
                 instruction.text.push_str("; Immediate with accumulator");
